@@ -6,6 +6,7 @@ using System.IO;
 using google_photos_upload.Extensions;
 using Microsoft.Extensions.Logging;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace google_photos_upload.Model
 {
@@ -28,7 +29,6 @@ namespace google_photos_upload.Model
         private readonly DirectoryInfo dirInfo = null;
         private List<MyImage> myImages = new List<MyImage>();
 
-
         #region Constructors
 
         public MyAlbum(ILogger logger, PhotosLibraryService service, string albumTitle, DirectoryInfo dirInfo)
@@ -45,19 +45,11 @@ namespace google_photos_upload.Model
 
         #region Properties
 
-        public UploadStatus UploadStatus {
+        public UploadStatus UploadStatus
+        {
             get;
             set;
         }
-
-        /// <summary>
-        /// Number of photos
-        /// </summary>
-        public int ImageUploadCount
-        {
-            get { return myImages.Count; }
-        }
-
 
         /// <summary>
         /// Verify this is a new Album that does not exist in Google Photos
@@ -127,8 +119,7 @@ namespace google_photos_upload.Model
                 {
                     foreach (var albumresponse in response.Albums)
                     {
-                        string title = albumresponse.Title;
-                        logger.LogInformation($"> {title}");
+                        logger.LogInformation($"> {albumresponse.Title},  {albumresponse.Id}");
                     }
 
                     if (response.NextPageToken != null)
@@ -158,7 +149,7 @@ namespace google_photos_upload.Model
 
             //Check if Album already exists and if it's writable
             //Get Album if it exists
-            if (!IsAlbumNew &&!IsAlbumWritable)
+            if (!IsAlbumNew && !IsAlbumWritable)
             {
                 _logger.LogError($"Album '{albumTitle}' already exists and is not writable (was created outside of this utility). For safety reasons by design such Albums will not be updated.");
                 UploadStatus = UploadStatus.UploadNotSuccessfull;
@@ -173,7 +164,7 @@ namespace google_photos_upload.Model
             }
 
             //Abort if zero images uploaded
-            if (ImageUploadCount == 0 || myImages.Count == 0)
+            if (!myImages.Any())
             {
                 _logger.LogError("Zero images were succesfully uploaded. Album will not be created");
                 UploadStatus = UploadStatus.UploadNotSuccessfull;
@@ -218,7 +209,7 @@ namespace google_photos_upload.Model
 
 
             //Add the uploaded images to the Users Google Photo account and into a specific album
-            if (!AddPhotosToAlbum())
+            if (!AddPhotosToAlbum(myImages, album))
             {
                 UploadStatus = UploadStatus.UploadNotSuccessfull;
                 return false;
@@ -228,47 +219,69 @@ namespace google_photos_upload.Model
             return true;
         }
 
+        private bool UploadMedia(FileInfo imgFile)
+        {
+            try
+            {
+                bool uploadresult = true;
+
+                MyImage myImage = new MyImage(_logger, service, imgFile);
+                myImages.Add(myImage);
+
+                if (myImage.ImageMediaType == MediaType.Ignore)
+                {
+                    myImage.UploadStatus = UploadStatus.UploadAborted;
+                    _logger.LogInformation($"NOT uploading '{myImage.Name}' as this file type is not relevant to upload");
+                }
+                else if (myImage.IsFormatSupported)
+                {
+                    //Upload the media item to Google Photos
+                    _logger.LogInformation($"Uploading {myImage.Name}");
+                    bool imguploadresult = myImage.UploadMedia();
+
+                    if (!imguploadresult)
+                    {
+                        uploadresult = false;
+                        _logger.LogError($"Image '{myImage.Name}' upload failed");
+                    }
+                }
+                else
+                {
+                    myImage.UploadStatus = UploadStatus.UploadNotSuccessfull;
+                    uploadresult = false;
+                    _logger.LogWarning($"NOT uploading '{myImage.Name}' due to file type not supported or EXIF data issue");
+                }
+
+                return uploadresult;
+            }
+            catch (Exception e)
+            {
+                _logger.LogError("error uploading async media", e);
+                throw;
+            }
+        }
 
         private bool UploadImages()
         {
+            List<Task<bool>> listOfTasks = new List<Task<bool>>();
             bool uploadresult = true;
-
-            foreach (var imgFile in dirInfo.GetFiles().OrderBy(fi => fi.Name))
+            foreach (FileInfo imgFile in dirInfo.GetFiles().OrderBy(fi => fi.Name))
             {
                 if (!imgFile.Attributes.HasFlag(FileAttributes.Hidden))  //Do not process hidden files
                 {
-                    MyImage myImage = new MyImage(_logger, service, imgFile);
-                    myImages.Add(myImage);
-
-                    if (myImage.ImageMediaType == MediaType.Ignore)
-                    {
-                        myImage.UploadStatus = UploadStatus.UploadAborted;
-                        _logger.LogInformation($"NOT uploading '{myImage.Name}' as this file type is not relevant to upload");
-                    }
-                    else if (myImage.IsFormatSupported)
-                    {
-                        //Upload the media item to Google Photos
-                        _logger.LogInformation($"Uploading {myImage.Name}");
-                        bool imguploadresult = myImage.UploadMedia();
-
-                        if (!imguploadresult)
-                        {
-                            myImage.UploadStatus = UploadStatus.UploadNotSuccessfull;
-
-                            uploadresult = false;
-                            _logger.LogError("Image upload failed");
-                        }
-                    }
-                    else
-                    {
-                        myImage.UploadStatus = UploadStatus.UploadNotSuccessfull;
-                        uploadresult = false;
-                        _logger.LogWarning($"NOT uploading '{myImage.Name}' due to file type not supported or EXIF data issue");
-                    }
+                    UploadMedia(imgFile);/*TODO: activate for asyn
+                    var t = new Task<bool>(() => { return UploadMedia(imgFile); });
+                    listOfTasks.Add(t);
+                    t.Start();//*/ 
+                    
                 }
             }
 
+            uploadresult = !Task.WhenAll(listOfTasks).Result.Any(b => !b);
+
             return uploadresult;
+
+
         }
 
 
@@ -297,10 +310,10 @@ namespace google_photos_upload.Model
                     if (albumresponse != null && albumresponse.Title != null
                         && (albumresponse.Title.Equals(albumTitle) || albumresponse.Title.Equals(alternateAlbumTitle))
                     )
-                        {
-                            album = albumresponse;
-                            return albumresponse;
-                        }
+                    {
+                        album = albumresponse;
+                        return albumresponse;
+                    }
                 }
 
                 //Fetch next page of Albums
@@ -316,6 +329,29 @@ namespace google_photos_upload.Model
             return null;
         }
 
+        internal void CloseAllMediaStream()
+        {
+            myImages.ForEach(i =>
+            {
+                i.CloseFileStream();
+            });
+        }
+
+        internal void DeleteSuccessfullyMediaTransfered()
+        {
+            myImages.ForEach(i =>
+            {
+                try
+                {
+                    if (i.UploadStatus == UploadStatus.UploadSuccess)
+                    { i.DeleteFile(); }
+                }
+                catch (Exception)
+                {
+                    _logger.LogWarning($"Error deleting file {i.Name}");
+                }
+            });
+        }
 
         private Album CreateAlbum()
         {
@@ -334,25 +370,25 @@ namespace google_photos_upload.Model
         }
 
 
-        private bool AddPhotosToAlbum()
+        private bool AddPhotosToAlbum(List<MyImage> imagesp, Album albumP)
         {
-            if (album == null)
+            if (albumP == null)
                 throw new ArgumentException("Album is NULL - image upload aborted");
-            if (album.IsWriteable == null || !album.IsWriteable.Value)
+            if (albumP.IsWriteable == null || !albumP.IsWriteable.Value)
                 throw new ArgumentException("Album is not writable - image upload aborted");
 
-            _logger.LogInformation($"Adding {myImages.Count} images to Album '{albumTitle}'");
+            _logger.LogInformation($"Adding {imagesp.Count} images to Album '{albumTitle}'");
 
             const int maxBatchSize = 49;
             int imagesAddedToAlbum = 0;
 
             //Divide into batches, due to API limitation
-            var batches = myImages.Where(x => x.UploadStatus == UploadStatus.UploadInProgress).Batch<MyImage>(maxBatchSize);
+            var batches = imagesp.Where(x => x.UploadStatus == UploadStatus.UploadInProgress).Batch<MyImage>(maxBatchSize);
 
             //Process each batch
             foreach (var batch in batches)
             {
-                int imagesNewlyAdded = ImageToAlbumBatch(batch);
+                int imagesNewlyAdded = ImageToAlbumBatch(batch, albumP);
                 imagesAddedToAlbum += imagesNewlyAdded;
 
                 //Set upload end status as upload is now completed
@@ -369,16 +405,16 @@ namespace google_photos_upload.Model
             }
 
 
-            if (myImages.Count(x => x.ImageMediaType != MediaType.Ignore) != imagesAddedToAlbum)
+            if (imagesp.Count(x => x.ImageMediaType != MediaType.Ignore) != imagesAddedToAlbum)
             {
-                _logger.LogError($"Images not added fully to Album. Expected {myImages.Count}, only {imagesAddedToAlbum} added.");
+                _logger.LogError($"Images not added fully to Album. Expected {imagesp.Count}, only {imagesAddedToAlbum} added.");
                 return false;
             }
 
             return true;
         }
 
-        private int ImageToAlbumBatch(IEnumerable<MyImage> batch)
+        private int ImageToAlbumBatch(IEnumerable<MyImage> batch, Album albumP)
         {
             var imagecollection = new List<NewMediaItem>();
 
@@ -399,7 +435,7 @@ namespace google_photos_upload.Model
 
             BatchCreateMediaItemsRequest batchCreateMediaItemsRequest = new BatchCreateMediaItemsRequest
             {
-                AlbumId = album.Id,
+                AlbumId = albumP.Id,
                 NewMediaItems = imagecollection
             };
 

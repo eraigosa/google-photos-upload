@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.MetaData.Profiles.Exif;
+using System.Text.Json;
 
 namespace google_photos_upload.Model
 {
@@ -22,8 +23,11 @@ namespace google_photos_upload.Model
         private readonly PhotosLibraryService service = null;
 
         private readonly FileInfo mediaFile = null;
-        private readonly IImageInfo imageInfo = null;
-        private string uploadToken = null;
+
+        /// <summary>
+        /// Google Photos UploadToken for the file when it has been uploaded
+        /// </summary>
+        public string UploadToken { get; internal set; } = null;
 
         //Get from config file if we should upload img without EXIF
         private readonly bool conf_IMG_UPLOAD_NO_EXIF = Convert.ToBoolean(System.Configuration.ConfigurationManager.AppSettings["IMG_UPLOAD_NO_EXIF"]);
@@ -33,9 +37,9 @@ namespace google_photos_upload.Model
         /// <summary>
         /// Supported file formats
         /// </summary>
-        private static readonly string[] allowedMovieFormats = { "mov", "avi" };
-        private static readonly string[] allowedPhotoFormats = { "jpg", "jpeg", "gif" };
-        private static readonly string[] ignoreFiletypes = { "txt", "thm" };
+        private static readonly string[] allowedMovieFormats = { "mov", "avi", "mp4" };
+        private static readonly string[] allowedPhotoFormats = { "jpg", "jpeg", "gif", "cr2", "3gp", "png", "vob" };
+        private static readonly string[] ignoreFiletypes = { "txt", "thm", "json" };
 
 
 
@@ -46,15 +50,6 @@ namespace google_photos_upload.Model
             this.mediaFile = imgFile;
             this.UploadStatus = UploadStatus.NotStarted;
             this.ImageMediaType = GetMediaType();
-
-            if (IsPhoto)
-            {
-                using (var fileStream = mediaFile.OpenRead())
-                {
-                    imageInfo = Image.Identify(fileStream);
-                }
-            }
-
         }
 
         public MediaType ImageMediaType { get; private set; }
@@ -91,20 +86,18 @@ namespace google_photos_upload.Model
         {
             get
             {
-                if (imageInfo != null)
+                try
                 {
-                    try
-                    {
-                        ExifValue exifValue = imageInfo.MetaData.ExifProfile.GetValue(SixLabors.ImageSharp.MetaData.Profiles.Exif.ExifTag.ImageDescription);
+                    var imageInfo = Image.Identify(this.GetFileStream());
+                    ExifValue exifValue = imageInfo?.MetaData?.ExifProfile?.GetValue(SixLabors.ImageSharp.MetaData.Profiles.Exif.ExifTag.ImageDescription);
 
-                        if (exifValue != null)
-                            return exifValue.ToString();
-                    }
-                    catch (Exception)
-                    {
-                        //Failed to read Description from EXIF data
-                        _logger.LogWarning("Failed reading Description EXIF data...");
-                    }
+                    if (exifValue != null)
+                        return exifValue.ToString();
+                }
+                catch (Exception)
+                {
+                    //Failed to read Description from EXIF data
+                    _logger.LogWarning("Failed reading Description EXIF data...");
                 }
 
                 //Use filename without extension, if EXIF tag is not there or for other file types like Movies
@@ -112,17 +105,10 @@ namespace google_photos_upload.Model
             }
         }
 
-        /// <summary>
-        /// Google Photos UploadToken for the file when it has been uploaded
-        /// </summary>
-        public string UploadToken
-        {
-            get { return this.uploadToken; }
-        }
-
         public bool IsPhoto
         {
-            get {
+            get
+            {
                 return ImageMediaType == MediaType.Photo;
             }
         }
@@ -146,9 +132,10 @@ namespace google_photos_upload.Model
             {
                 try
                 {
-                    ExifValue exifValue = imageInfo.MetaData.ExifProfile.GetValue(SixLabors.ImageSharp.MetaData.Profiles.Exif.ExifTag.DateTimeOriginal);
+                    var imageInfo = Image.Identify(this.GetFileStream());
+                    ExifValue exifValue = imageInfo?.MetaData?.ExifProfile?.GetValue(SixLabors.ImageSharp.MetaData.Profiles.Exif.ExifTag.DateTimeOriginal);
 
-                    string datetimeOriginaltxt = exifValue.Value.ToString();
+                    string datetimeOriginaltxt = exifValue?.Value?.ToString();
 
                     if (string.IsNullOrEmpty(datetimeOriginaltxt))
                         return false;
@@ -195,7 +182,8 @@ namespace google_photos_upload.Model
 
         public bool IsFormatSupported
         {
-            get {
+            get
+            {
                 try
                 {
                     if (IsPhoto)
@@ -209,7 +197,7 @@ namespace google_photos_upload.Model
                             _logger.LogWarning("Image will appear with today's date in Google Photos as EXIF data is missing");
                         }
 
-                        
+
                     }
                     else if (IsMovie)
                     {
@@ -241,11 +229,12 @@ namespace google_photos_upload.Model
         {
             UploadStatus = UploadStatus.UploadInProgress;
 
-            this.uploadToken = UploadMediaFile(service);
+            this.UploadToken = UploadMediaFile(service);
 
-            if (uploadToken is null)
+            if (UploadToken is null)
             {
                 UploadStatus = UploadStatus.UploadNotSuccessfull;
+            
                 return false;
             }
 
@@ -254,6 +243,56 @@ namespace google_photos_upload.Model
             return true;
         }
 
+        public static void ListImages(string album_id, PhotosLibraryService service, ILogger logger)
+        {
+            logger.LogInformation("");
+            logger.LogInformation("Fetching media info for albun " + album_id);
+
+            SearchMediaItemsResponse response = null;
+            try
+            {
+                MediaItemsResource.SearchRequest request = service.MediaItems.Search(new SearchMediaItemsRequest
+                {
+                    AlbumId = album_id
+                });
+
+                response = request.Execute();
+            }
+            catch (Exception e)
+            {
+                logger.LogError("error getting media", e);
+            }
+
+            if (response.MediaItems.Any())
+            {
+                logger.LogInformation("media info:");
+
+                foreach (var item in response.MediaItems)
+                {
+                    logger.LogInformation($"> {JsonSerializer.Serialize(item)}");
+                }
+            }
+            else
+            { logger.LogInformation("No media found."); }
+        }
+
+        public static void GetMediaInfo(string mediaItemId, PhotosLibraryService service, ILogger logger)
+        {
+            logger.LogInformation("");
+            logger.LogInformation("Fetching media info for " + mediaItemId);
+
+
+            var request = service.MediaItems.Get(mediaItemId);
+
+            var response = request.Execute();
+            logger.LogInformation("media info:");
+            if (response != null)
+            {
+                logger.LogInformation($"> { JsonSerializer.Serialize(response)}");
+            }
+            else
+            { logger.LogInformation("No media found."); }
+        }
 
         /// <summary>
         /// Upload photo to Google Photos.
@@ -272,43 +311,40 @@ namespace google_photos_upload.Model
 
             try
             {
-                using (var fileStream = mediaFile.OpenRead())
+                var fileStream = this.GetFileStream();
+
+                //Create byte array to store the image for transfer
+                byte[] pixels = new byte[fileStream.Length];
+
+                //Read image into the pixels byte array
+                fileStream.Read(pixels, 0, (int)fileStream.Length);
+
+                //Set http headers per Google Photos API requirement
+                //https://developers.google.com/photos/library/guides/upload-media
+                var httpContent = new ByteArrayContent(pixels);
+                httpContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                httpContent.Headers.Add("X-Goog-Upload-File-Name", NameASCII);
+                httpContent.Headers.Add("X-Goog-Upload-Protocol", "raw");
+
+                //Object to store response
+                HttpResponseMessage mediaResponse = null;
+
+                try
                 {
-                    //Create byte array to store the image for transfer
-                    byte[] pixels = new byte[fileStream.Length];
-
-                    //Read image into the pixels byte array
-                    fileStream.Read(pixels, 0, (int)fileStream.Length);
-
-                    //Set http headers per Google Photos API requirement
-                    //https://developers.google.com/photos/library/guides/upload-media
-                    var httpContent = new ByteArrayContent(pixels);
-                    httpContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-                    httpContent.Headers.Add("X-Goog-Upload-File-Name", NameASCII);
-                    httpContent.Headers.Add("X-Goog-Upload-Protocol", "raw");
-
-                    //Object to store response
-                    HttpResponseMessage mediaResponse = null;
-
-                    try
-                    {
-                        //Send HTTP Post request
-                        mediaResponse = photoService.HttpClient.PostAsync(PhotosLibraryPasebath, httpContent).Result;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Exception occured during file posting. Inner Exception: {0}", ex.InnerException.ToString());
-                    }
-
-
-                    if (mediaResponse is null)
-                        _logger.LogDebug("mediaResponse is null");
-                    else if (mediaResponse.IsSuccessStatusCode)
-                        newUploadToken = mediaResponse.Content.ReadAsStringAsync().Result;
-                    else
-                        _logger.LogWarning("Upload Media Response. Status Code: {0}. Reason Phrase: {1}", mediaResponse.StatusCode, mediaResponse.ReasonPhrase);
+                    //Send HTTP Post request
+                    mediaResponse = photoService.HttpClient.PostAsync(PhotosLibraryPasebath, httpContent).Result;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Exception occured during file posting. Inner Exception: {0}", ex.InnerException.ToString());
                 }
 
+                if (mediaResponse is null)
+                    _logger.LogDebug("mediaResponse is null");
+                else if (mediaResponse.IsSuccessStatusCode)
+                    newUploadToken = mediaResponse.Content.ReadAsStringAsync().Result;
+                else
+                    _logger.LogWarning("Upload Media Response. Status Code: {0}. Reason Phrase: {1}", mediaResponse.StatusCode, mediaResponse.ReasonPhrase);
             }
             catch (Exception e)
             {
@@ -320,5 +356,31 @@ namespace google_photos_upload.Model
             return newUploadToken;
         }
 
+        internal void DeleteFile()
+        {
+            this.mediaFile.Delete();
+        }
+
+        internal void CloseFileStream()
+        {
+            try {
+                this._fileStream?.Close();
+                this._fileStream?.Dispose();
+                this._fileStream = null;
+            }
+            catch (Exception)
+            {
+                //do nothing
+            }
+        }
+
+        private FileStream _fileStream;
+        public  FileStream GetFileStream()
+        {
+            if (_fileStream is null || !_fileStream.CanRead)
+                _fileStream = mediaFile.OpenRead();
+            return _fileStream;
+            //TODO: close the file stream somewhere.
+        }
     }
 }

@@ -20,7 +20,7 @@ namespace google_photos_upload
 
         public void DoAction(string[] args)
         {
-            short command = 0;
+            string command = "0";
             bool shouldShowHelp = false;
             string directorypath = null;
             bool? addifalbumexists = null;
@@ -53,7 +53,8 @@ namespace google_photos_upload
             var options = new OptionSet {
                 { "c=|command=", "Select Upload Command (-1 - Authentication only, 0 - User is asked, 1 - List current Google Photos Album, " +
                     "2 - Upload Single Folder into Google Photos as an Album, " +
-                    "3 - Upload Multiple Folders from a main Folder into Google Photos as Albums", (short c) => command = c },
+                    "3 - Upload Multiple Folders from a main Folder into Google Photos as Albums",
+                    (string c) => command = c },
                 { "d=|directory=", "Directory path to be processed", (string v) => directorypath = v },
                 { "a=|addifalbumexists=", "Add media to Google Photos album if the album already exists. Value should be 'y'", a => addifalbumexists = a == "y" },
                 { "h|help", "show this message and exit", h => shouldShowHelp = h != null },
@@ -93,14 +94,14 @@ namespace google_photos_upload
             //Closing out
             Console.WriteLine();
             Console.WriteLine();
-            Console.WriteLine("Exiting Google Photos Upload. Have a nice day!");
+            Console.WriteLine(" Exiting Google Photos Upload. Have a nice day!");
             Console.WriteLine();
             Console.WriteLine(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
             Console.WriteLine();
             Console.WriteLine();
         }
 
-        private void Execute(short command, string directorypath, bool? addifalbumexists)
+        private void Execute(string command, string directorypath, bool? addifalbumexists)
         {
             try
             {
@@ -119,7 +120,8 @@ namespace google_photos_upload
                 //Do the requested command
                 do
                 {
-                    var c = Convert.ToInt16(command);
+                    Int16 c;
+                    Int16.TryParse(command, out c);
 
                     if (c == 0)
                     {
@@ -137,6 +139,14 @@ namespace google_photos_upload
                             break;
                         case 3:
                             uploadService.ProcessMainDirectory(directorypath, addifalbumexists);
+                            break;
+
+                        //not listed on user options
+                        case 7:
+                            uploadService.ListImages(null);
+                            break;
+                        case 8:
+                            uploadService.GetMediaInfo(null);
                             break;
                         default:
                             appexit = true;

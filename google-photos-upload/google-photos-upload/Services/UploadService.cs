@@ -18,6 +18,7 @@ namespace google_photos_upload.Services
         private readonly IAuthenticationService authenticationService;
         private PhotosLibraryService service = null;
         private DriveService driveService = null;
+        private readonly bool conf_IMG_DELETE_WHEN_FINISHED = Convert.ToBoolean(System.Configuration.ConfigurationManager.AppSettings["IMG_DELETE_WHEN_FINISHED"]);
 
         public UploadService(ILogger<UploadService> logger, IAuthenticationService authenticationService)
         {
@@ -39,10 +40,37 @@ namespace google_photos_upload.Services
             return true;
         }
 
+
         public void ListAlbums()
         {
             MyAlbum.ListAlbums(service, logger);
         }
+
+
+        public void ListImages(string album_id)
+        {
+            if (album_id is null)
+            {
+                Console.WriteLine("# List media in an album");
+                Console.WriteLine("What is the album id?");
+                album_id = Console.ReadLine();
+            }
+
+            MyImage.ListImages(album_id, service, logger);
+        }
+
+        public void GetMediaInfo(string media_id)
+        {
+            if (media_id is null)
+            {
+                Console.WriteLine("# get media info");
+                Console.WriteLine("What is the media id?");
+                media_id = Console.ReadLine();
+            }
+
+            MyImage.GetMediaInfo(media_id, service, logger);
+        }
+
 
         public bool ProcessMainDirectory(string directorypath, bool? addifalbumexists)
         {
@@ -65,17 +93,7 @@ namespace google_photos_upload.Services
             }
 
             DirectoryInfo mainDirInfo = new DirectoryInfo(path);
-            foreach (var imgFolder in mainDirInfo.GetDirectories().OrderBy(di => di.Name))
-            {
-                var albumuploadresult = ProcessAlbumDirectoryUpload(imgFolder.FullName, addifalbumexists);
-
-                albumUploadResults.Add(new Tuple<bool, string>(albumuploadresult.uploadResult, albumuploadresult.uploadResultText));
-
-                if (!albumuploadresult.uploadResult)
-                {
-                    Console.WriteLine($"Upload failed of Album '{imgFolder.Name}'");
-                }
-            }
+            ProcesAlbumDirectoryRecursive(mainDirInfo, "", addifalbumexists, albumUploadResults);
 
             //Print summary for user
             Console.WriteLine();
@@ -89,6 +107,27 @@ namespace google_photos_upload.Services
             Console.WriteLine();
 
             return true;
+        }
+
+        private void ProcesAlbumDirectoryRecursive(DirectoryInfo parentDirInfo, string parentAlbumTitle, bool? addifalbumexists, List<Tuple<bool, string>> albumUploadResults)
+        {
+            foreach (var imgFolder in parentDirInfo.GetDirectories().OrderBy(di => di.Name))
+            {
+                var parentAlbumTitleTmp = GetCompleteAlbumTitle(parentDirInfo, parentAlbumTitle);
+                this.ProcesAlbumDirectoryRecursive(imgFolder, parentAlbumTitleTmp, addifalbumexists, albumUploadResults);
+
+                var albumuploadresult = ProcessAlbumDirectoryUpload(imgFolder.FullName, addifalbumexists, parentAlbumTitleTmp);
+
+                albumUploadResults.Add(new Tuple<bool, string>(albumuploadresult.uploadResult, albumuploadresult.uploadResultText));
+
+                if (!albumuploadresult.uploadResult)
+                { Console.WriteLine($"Upload failed of Album '{imgFolder.Name}'"); }
+            }
+        }
+
+        private static string GetCompleteAlbumTitle(DirectoryInfo dirInfo, string parentAlbumTitle)
+        {
+            return (string.IsNullOrEmpty(parentAlbumTitle) ? string.Empty : parentAlbumTitle + "-") + dirInfo.Name;
         }
 
         public bool ProcessAlbumDirectory(string directorypath, bool? addifalbumexists)
@@ -180,7 +219,7 @@ namespace google_photos_upload.Services
             return storageAvailable;
         }
 
-        private (bool uploadResult, string uploadResultText) ProcessAlbumDirectoryUpload(string path, bool? addifalbumexists)
+        private (bool uploadResult, string uploadResultText) ProcessAlbumDirectoryUpload(string path, bool? addifalbumexists, string parentAlbumTitle = "")
         {
             try
             {
@@ -194,9 +233,7 @@ namespace google_photos_upload.Services
                 if (!SpaceAvailableForMediaFolder(dirInfo))
                     return (false, "Album not uploaded. Not sufficient storage space in Google Photos.");
 
-
-                
-                string albumtitle = dirInfo.Name;
+                string albumtitle = GetCompleteAlbumTitle(dirInfo, parentAlbumTitle);
 
                 Console.WriteLine();
                 Console.WriteLine($"Uploading Album: {albumtitle}");
@@ -231,6 +268,10 @@ namespace google_photos_upload.Services
                 //Upload the album and images to Google Photos
                 album.UploadAlbum();
 
+                album.CloseAllMediaStream();
+
+                if (conf_IMG_DELETE_WHEN_FINISHED)
+                    album.DeleteSuccessfullyMediaTransfered();
 
                 //Upload complete, share the result
                 return (true, album.ToStringUploadResult());
@@ -264,6 +305,5 @@ namespace google_photos_upload.Services
 
             return false;
         }
-
     }
 }

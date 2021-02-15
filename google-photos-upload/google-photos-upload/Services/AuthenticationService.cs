@@ -72,7 +72,7 @@ namespace google_photos_upload.Services
                     logger.LogInformation($"Credential file saved to: {credPath}");
                 }
 
-                logger.LogInformation("Authentiation complete.");
+                logger.LogInformation($"Authentiation complete. using '{credPath}'");
             }
         }
 
